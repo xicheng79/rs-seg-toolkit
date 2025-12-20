@@ -1,0 +1,7 @@
+numpy
+opencv-python
+tqdm
+prettytable
+pyecharts
+shutil
+osgeo  # 通常包含在 gdal 包中
