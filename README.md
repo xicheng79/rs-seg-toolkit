@@ -24,7 +24,7 @@ Ensure your environment has the following core libraries installed:
 
 ## 🗂️ Script Reference
 
-The toolkit is organized by functionality. Rename your scripts to standard Python conventions (snake_case) before use.
+The toolkit is organized by functionality. All scripts use snake_case naming.
 
 ### 1. Data Preprocessing (Before Training)
 
@@ -39,9 +39,9 @@ The toolkit is organized by functionality. Rename your scripts to standard Pytho
 
 | Script Name | Function | Description |
 | :--- | :--- | :--- |
-| **`dataset_utils.py`** | **Split & Indexing** | Generates `train.txt`/`val.txt` lists and supports shuffling/copying subsets. |
+| **`dataset_file_utils.py`** | **Split & Indexing** | Generates `train.txt`/`val.txt` lists and supports shuffling/copying subsets. |
 | **`compute_dataset_stats.py`** | **Normalization** | Calculates the Mean and Std (RGB) of the dataset for input normalization. |
-| **`analyze_label_stats.py`** | **Class Balance** | Analyzes the ratio of positive/negative samples to guide Loss function selection. |
+| **`compute_label_distribution.py`** | **Class Balance** | Analyzes the ratio of positive/negative samples to guide Loss function selection. |
 
 ### 3. Post-processing (After Inference)
 
@@ -68,7 +68,7 @@ If you start with Vector data (`.shp`):
 
 ### Step 2: Dataset Organization
 1.  Run `remap_labels.py` if your label values need adjustment (e.g., 0/255 -> 0/1).
-2.  Run `dataset_utils.py` to generate `train.txt` and `val.txt`.
+2.  Run `dataset_file_utils.py` to generate `train.txt` and `val.txt`.
 3.  Run `compute_dataset_stats.py` to get normalization parameters for your config file.
 
 ### Step 3: Training & Monitoring

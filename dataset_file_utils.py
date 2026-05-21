@@ -47,13 +47,14 @@ def copy_files_from_list(src_dir, list_txt_path, dst_dir, ext='.png'):
     print(f"完成。成功: {success_count}, 丢失: {missing_count}")
 
 
-def generate_file_list(src_dir, txt_save_path, target_ext='.png', shuffle=True， , seed=42):
+def generate_file_list(src_dir, txt_save_path, target_ext='.png', shuffle=True, seed=42):
     """
     扫描文件夹，生成文件名列表 txt
     :param src_dir: 要扫描的文件夹
     :param txt_save_path: 保存 txt 的位置
     :param target_ext: 只扫描特定后缀的文件
     :param shuffle: 是否打乱顺序
+    :param seed: 随机种子，保证每次打乱结果一致
     """
     if not os.path.exists(src_dir):
         print(f"错误: 源目录不存在 {src_dir}")
@@ -72,15 +73,16 @@ def generate_file_list(src_dir, txt_save_path, target_ext='.png', shuffle=True�
 
     # 打乱顺序
     if shuffle:
-        if shuffle:
         # 设定随机种子，保证每次打乱的结果是一样的
-        random.seed(seed) 
+        random.seed(seed)
         random.shuffle(files)
         print(f"已使用随机种子 {seed} 打乱文件顺序。")
 
     # 写入文件
-    # 自动创建父目录
-    os.makedirs(os.path.dirname(txt_save_path), exist_ok=True)
+    # 自动创建父目录（仅在 txt_save_path 含目录部分时才创建，避免 makedirs("") 报错）
+    parent_dir = os.path.dirname(txt_save_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     
     with open(txt_save_path, 'w', encoding='utf-8') as f:
         for name in files:

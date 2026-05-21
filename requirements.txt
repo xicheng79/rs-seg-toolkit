@@ -1,7 +1,13 @@
-numpy
-opencv-python
-tqdm
-prettytable
-pyecharts
-shutil
-osgeo  # 通常包含在 gdal 包中
+# Python 标准库无需列出（如 os, shutil, random 等）
+#
+# GDAL 推荐使用 conda 安装：
+#   conda install -c conda-forge gdal
+# 如果使用 pip，请确保系统已正确安装 GDAL 二进制库后再安装：
+#   pip install GDAL==<your_system_version>
+GDAL>=3.4
+
+numpy>=1.21
+opencv-python>=4.5
+tqdm>=4.60
+prettytable>=3.0
+pyecharts>=2.0

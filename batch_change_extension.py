@@ -70,7 +70,7 @@ def batch_change_extension(src_dir, old_ext='.png', new_ext='.tif', dst_dir=None
     print(f"处理完成。成功: {success_count}/{len(files)}")
     if old_ext.lower() == '.png' and new_ext.lower() in ['.tif', '.tiff']:
         print("\n[警告] 你将 .png 后缀改为了 .tif，但没有转换图像编码！")
-        print("       如果后续软件无法打开，请使用 PNG2TiF.py 进行真正的格式转换。")
+        print("       如果后续软件无法打开，请使用 convert_png_to_geotiff.py 进行真正的格式转换。")
 
 if __name__ == '__main__':
     # --- 配置区域 ---
