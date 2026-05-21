@@ -1,100 +1,222 @@
-import cv2
+"""
+计算数据集每个波段的均值与标准差，用于深度学习输入归一化。
+
+特性：
+- 优先使用 GDAL 读取，支持任意波段数与 dtype（uint8/uint16/float32 等）
+- 自动从 GDAL 元数据读取 NoData，并支持用户显式指定 nodata 值
+- 数据 dtype 不同时按 dtype 选择合适的归一化最大值（uint8 -> 255, uint16 -> 65535 等）
+"""
 import os
+import cv2
 import numpy as np
 from tqdm import tqdm
 from prettytable import PrettyTable
 
+try:
+    from osgeo import gdal
+    HAS_GDAL = True
+except ImportError:
+    HAS_GDAL = False
+
+
+# 不同 dtype 默认归一化最大值
+DEFAULT_MAX_VALUE = {
+    'uint8': 255.0,
+    'int8': 127.0,
+    'uint16': 65535.0,
+    'int16': 32767.0,
+    'uint32': 4294967295.0,
+    'int32': 2147483647.0,
+    'float32': 1.0,   # 浮点常已归一或表达反射率
+    'float64': 1.0,
+}
+
+
 class DatasetStats:
-    def __init__(self, path, img_ext='.png', is_norm=True):
+    def __init__(self, path, img_ext='.tif', is_norm=True, nodata=None,
+                 use_gdal=True, max_norm_value=None):
+        """
+        :param path: 图像目录
+        :param img_ext: 文件后缀（不区分大小写）
+        :param is_norm: 是否将结果归一化到 [0,1]
+        :param nodata: 显式 NoData 值；像素全波段等于该值时排除（None=按数据集元数据）
+        :param use_gdal: True 使用 GDAL（推荐用于 .tif 多波段），False 强制 OpenCV
+        :param max_norm_value: 归一化最大值；None 时按 dtype 自动选择
+        """
         self.path = path
-        self.img_ext = img_ext
+        self.img_ext = img_ext.lower()
         self.is_norm = is_norm
-        
+        self.nodata = nodata
+        self.use_gdal = use_gdal and HAS_GDAL
+        self.max_norm_value = max_norm_value
+
+        if use_gdal and not HAS_GDAL:
+            print("[警告] 未检测到 GDAL，自动回退到 OpenCV。")
+
     def cv2_imread_safe(self, file_path):
-        """安全读取图像，支持中文路径"""
+        """OpenCV 读取，IMREAD_UNCHANGED 保留原 dtype/通道数。返回 (HWC array, None)。"""
         try:
-            return cv2.imdecode(np.fromfile(file_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
+                               cv2.IMREAD_UNCHANGED)
+            if img is None:
+                return None, None
+            if img.ndim == 2:
+                img = img[:, :, np.newaxis]
+            else:
+                # OpenCV 默认 BGR/BGRA，转为 RGB/RGBA 与 GDAL 行为一致
+                if img.shape[2] == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                elif img.shape[2] == 4:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+            return img, None
         except Exception as e:
-            print(f"读取错误: {file_path} - {e}")
-            return None
+            print(f"OpenCV 读取错误: {file_path} - {e}")
+            return None, None
+
+    def gdal_imread(self, file_path):
+        """GDAL 读取，返回 (HWC array, nodata_value)。"""
+        try:
+            ds = gdal.Open(file_path)
+            if ds is None:
+                return None, None
+            arr = ds.ReadAsArray()  # (C,H,W) 或 (H,W)
+            band1 = ds.GetRasterBand(1)
+            ds_nodata = band1.GetNoDataValue()
+            ds = None
+
+            if arr is None:
+                return None, None
+            if arr.ndim == 2:
+                arr = arr[np.newaxis, :, :]
+            arr = np.transpose(arr, (1, 2, 0))  # -> (H,W,C)
+            return arr, ds_nodata
+        except Exception as e:
+            print(f"GDAL 读取错误: {file_path} - {e}")
+            return None, None
+
 
     def calculate(self):
-        # 初始化累加器 (使用 float64 防止溢出)
-        # channel_sum: [B_sum, G_sum, R_sum] (OpenCV 默认读入是 BGR，我们内部处理，最后转 RGB)
-        cumulative_sum = np.zeros(3, dtype=np.float64)
-        cumulative_sq_sum = np.zeros(3, dtype=np.float64)
+        """扫描目录、累加像素、计算 mean/std。"""
+        file_list = [f for f in os.listdir(self.path)
+                     if f.lower().endswith(self.img_ext)]
+
+        if not file_list:
+            print(f"未找到 {self.img_ext} 文件。")
+            return None
+
+        print(f"开始处理 {len(file_list)} 张图像（{'GDAL' if self.use_gdal else 'OpenCV'} 模式）...")
+
+        cumulative_sum = None
+        cumulative_sq_sum = None
         total_pixel_count = 0
-        
-        file_list = [f for f in os.listdir(self.path) if f.endswith(self.img_ext)]
-        print(f"开始处理 {len(file_list)} 张图像...")
+        first_dtype = None
+        first_bands = None
+        skipped = 0
 
         for file_name in tqdm(file_list):
             file_path = os.path.join(self.path, file_name)
-            
-            img = self.cv2_imread_safe(file_path)
+
+            if self.use_gdal:
+                img, ds_nodata = self.gdal_imread(file_path)
+            else:
+                img, ds_nodata = self.cv2_imread_safe(file_path)
+
             if img is None:
+                skipped += 1
                 continue
 
-            # 图像转换：BGR -> RGB (深度学习通常使用 RGB)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # 归一化策略优化：
-            # 不在循环里除以 255，直接累加原始值，速度更快，精度损失可忽略。
-            # 最后结果再除以 255。
-            img = img.astype(np.float64)
-            
-            # reshape 成 (N, 3) 方便计算
-            img = img.reshape(-1, 3)
-            
-            # 累加像素值
-            cumulative_sum += np.sum(img, axis=0)
-            
-            # 累加像素值的平方
-            cumulative_sq_sum += np.sum(img ** 2, axis=0)
-            
-            # 累加像素总数
-            total_pixel_count += img.shape[0]
+            # NoData 优先级：用户参数 > 数据集元数据
+            nodata = self.nodata if self.nodata is not None else ds_nodata
 
-        if total_pixel_count == 0:
-            print("未找到有效像素，请检查路径或文件。")
-            return
+            h, w, c = img.shape
+            if cumulative_sum is None:
+                cumulative_sum = np.zeros(c, dtype=np.float64)
+                cumulative_sq_sum = np.zeros(c, dtype=np.float64)
+                first_bands = c
+                first_dtype = img.dtype.name
+            elif c != first_bands:
+                print(f"\n[跳过] {file_name} 波段数 {c} 与首张 {first_bands} 不一致。")
+                skipped += 1
+                continue
 
-        # --- 计算最终统计量 ---
-        
-        # Mean = Sum / N
+            arr = img.reshape(-1, c).astype(np.float64)
+
+            # 排除 NoData：所有波段都为 NoData 视为无效像素
+            if nodata is not None:
+                mask_valid = ~np.all(np.isclose(arr, float(nodata)), axis=1)
+                arr = arr[mask_valid]
+                if arr.size == 0:
+                    continue
+
+            cumulative_sum += arr.sum(axis=0)
+            cumulative_sq_sum += (arr ** 2).sum(axis=0)
+            total_pixel_count += arr.shape[0]
+
+        if total_pixel_count == 0 or cumulative_sum is None:
+            print("未找到有效像素，请检查路径或 NoData 设置。")
+            return None
+
         mean = cumulative_sum / total_pixel_count
-        
-        # Std = sqrt( E[x^2] - (E[x])^2 )
-        # Variance = (Sum_sq / N) - Mean^2
         variance = (cumulative_sq_sum / total_pixel_count) - (mean ** 2)
+        # 防止浮点误差产生极小负数
+        variance = np.maximum(variance, 0)
         std = np.sqrt(variance)
 
-        # 如果需要归一化 (0-1)，则除以 255
+        # 归一化
         if self.is_norm:
-            mean /= 255.0
-            std /= 255.0
+            max_val = self.max_norm_value
+            if max_val is None:
+                max_val = DEFAULT_MAX_VALUE.get(first_dtype, 255.0)
+            if max_val and max_val != 0:
+                mean = mean / max_val
+                std = std / max_val
 
-        self.print_table(mean, std)
+        self.print_table(mean, std, first_bands, first_dtype, total_pixel_count, skipped)
+        return {
+            'mean': mean.tolist(),
+            'std': std.tolist(),
+            'bands': first_bands,
+            'dtype': first_dtype,
+            'pixel_count': int(total_pixel_count),
+            'skipped': skipped,
+        }
 
-    def print_table(self, mean, std):
+    def print_table(self, mean, std, bands, dtype, pixel_count, skipped):
+        # 自动列名：1 通道 'V'；3 -> R/G/B；4 -> R/G/B/A；其他 B1..Bn
+        if bands == 3:
+            band_names = ['R', 'G', 'B']
+        elif bands == 4:
+            band_names = ['R', 'G', 'B', 'A']
+        elif bands == 1:
+            band_names = ['V']
+        else:
+            band_names = [f'B{i + 1}' for i in range(bands)]
+
         table = PrettyTable()
-        table.field_names = ["Type", "R", "G", "B"]
-        
-        # 保留4位小数
-        table.add_row(["Mean", f"{mean[0]:.4f}", f"{mean[1]:.4f}", f"{mean[2]:.4f}"])
-        table.add_row(["Std",  f"{std[0]:.4f}",  f"{std[1]:.4f}",  f"{std[2]:.4f}"])
-        
-        print("\n计算结果 (Order: RGB):")
+        table.field_names = ['Type'] + band_names
+        table.add_row(['Mean'] + [f'{v:.4f}' for v in mean])
+        table.add_row(['Std'] + [f'{v:.4f}' for v in std])
+
+        print(f"\n计算结果（dtype={dtype}, bands={bands}, "
+              f"valid_pixels={pixel_count}, skipped_files={skipped}）:")
         print(table)
-        
-        # 方便复制的代码格式
+
         print(f"\n[Copy for Config]\nMean: {mean.tolist()}\nStd:  {std.tolist()}")
+
 
 if __name__ == '__main__':
     # 配置区
-    DATA_PATH = r'E:\Samples-Water\chengdu\image'  # 修改为你的实际路径
-    FILE_EXT = '.tif'  # 通常遥感影像或数据集可能是 png, jpg, tif
-    NORMALIZE = True   # 是否输出 0-1 范围的数值
+    DATA_PATH = r'E:\Samples-Water\chengdu\image'
+    FILE_EXT = '.tif'
+    NORMALIZE = True
+    NODATA = None       # 例如设为 0 可排除全黑填充区域
+    USE_GDAL = True     # 推荐 True，遥感 .tif 必须 True 才能正确读取多波段/16位
 
-    stats_tool = DatasetStats(DATA_PATH, FILE_EXT, NORMALIZE)
+    stats_tool = DatasetStats(
+        path=DATA_PATH,
+        img_ext=FILE_EXT,
+        is_norm=NORMALIZE,
+        nodata=NODATA,
+        use_gdal=USE_GDAL,
+    )
     stats_tool.calculate()
