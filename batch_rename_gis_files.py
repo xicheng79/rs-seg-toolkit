@@ -1,77 +1,224 @@
 import os
-import glob
+import sys
+import uuid
+from typing import Dict, List, Tuple
 
-def batch_rename_gis_files():
-    # --- 配置区域 ---
-    # 建议：路径使用 raw string (r"...") 或正斜杠
-    list_txt_path = r'E:\Samples-水体\chengdu-1024\new.txt'
-    target_folder = r'E:\Samples-水体\chengdu-1024\label-shp'
-    
-    # 检查路径是否存在
-    if not os.path.exists(list_txt_path) or not os.path.exists(target_folder):
-        print("错误：路径不存在，请检查配置。")
-        return
+# Shapefile 标准 sidecar 后缀白名单（小写）
+# 参考：ESRI Shapefile 技术文档 + QGIS/ArcGIS 实践
+SHP_SIDECAR_EXTS = {
+    '.shp', '.shx', '.dbf', '.prj', '.cpg',
+    '.qmd', '.qix', '.sbn', '.sbx', '.shp.xml',
+}
+# GeoTIFF 标准 sidecar 后缀白名单
+TIF_SIDECAR_EXTS = {
+    '.tif', '.tiff', '.tfw', '.aux.xml', '.ovr', '.tif.aux.xml',
+}
 
-    # 1. 读取新文件名列表
-    with open(list_txt_path, 'r', encoding='utf-8') as f:
-        # 过滤空行并去除换行符
-        new_names = [line.strip() for line in f.readlines() if line.strip()]
 
-    print(f"加载了 {len(new_names)} 个新文件名。")
+def _split_double_ext(filename: str) -> Tuple[str, str]:
+    """
+    支持双后缀（如 .shp.xml, .tif.aux.xml）的拆分。
+    返回 (basename, ext)，ext 包含前导点且为小写。
+    """
+    lower = filename.lower()
+    for double_ext in ('.shp.xml', '.tif.aux.xml', '.aux.xml'):
+        if lower.endswith(double_ext):
+            return filename[:-len(double_ext)], double_ext
+    base, ext = os.path.splitext(filename)
+    return base, ext.lower()
 
-    # 2. 获取目标文件夹中的所有文件
-    all_files = os.listdir(target_folder)
-    
-    # 筛选并排序 (排序至关重要，保证与txt列表对应)
-    tif_files = sorted([f for f in all_files if f.lower().endswith('.tif')])
-    shp_files = sorted([f for f in all_files if f.lower().endswith('.shp')])
 
-    # 3. 检查数量匹配
-    if len(tif_files) > 0 and len(tif_files) != len(new_names):
-        print(f"[警告] TIF文件数量({len(tif_files)}) 与 名称列表数量({len(new_names)}) 不一致！停止操作以防错误。")
-        return
-    
-    if len(shp_files) > 0 and len(shp_files) != len(new_names):
-        print(f"[警告] SHP文件数量({len(shp_files)}) 与 名称列表数量({len(new_names)}) 不一致！停止操作以防错误。")
-        return
+def parse_mapping_file(mapping_path: str) -> Dict[str, str]:
+    """
+    解析双列映射文件，每行格式：old_basename<sep>new_basename
+    分隔符支持 TAB / 逗号 / 多个空格。
+    忽略空行和以 # 开头的注释行。
 
-    # 4. 执行重命名 - TIF
-    if tif_files:
-        print("\n--- 开始重命名 TIF 文件 ---")
-        for old_filename, new_base_name in zip(tif_files, new_names):
-            old_path = os.path.join(target_folder, old_filename)
-            new_path = os.path.join(target_folder, new_base_name + ".tif")
-            
-            try:
-                os.rename(old_path, new_path)
-                print(f"Renamed: {old_filename} -> {new_base_name}.tif")
-            except OSError as e:
-                print(f"Error renaming {old_filename}: {e}")
+    :return: {old_basename: new_basename}
+    :raises ValueError: 若发现重复的 old 或 new
+    """
+    if not os.path.exists(mapping_path):
+        raise FileNotFoundError(f"映射文件不存在: {mapping_path}")
 
-    # 5. 执行重命名 - SHP (包含副作用文件 .dbf, .shx 等)
-    if shp_files:
-        print("\n--- 开始重命名 SHP 及关联文件 ---")
-        for old_filename, new_base_name in zip(shp_files, new_names):
-            # 获取旧文件的基础名称（不含后缀），例如 "data_123.shp" -> "data_123"
-            old_basename = os.path.splitext(old_filename)[0]
-            
-            # 查找所有同名文件 (data_123.shp, data_123.dbf, data_123.prj ...)
-            # 使用 glob 匹配所有扩展名
-            related_files = glob.glob(os.path.join(target_folder, f"{old_basename}.*"))
-            
-            for old_file_path in related_files:
-                # 获取该文件的后缀 (.dbf)
-                ext = os.path.splitext(old_file_path)[1]
-                
-                # 构建新路径
-                new_file_name = new_base_name + ext
-                new_file_path = os.path.join(target_folder, new_file_name)
-                
+    mapping: Dict[str, str] = {}
+    new_names_seen: Dict[str, str] = {}  # 反向检查：new -> old
+
+    with open(mapping_path, 'r', encoding='utf-8') as f:
+        for line_no, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            # 依次尝试 TAB、逗号、空格作为分隔符
+            for sep in ('\t', ',', None):  # None 表示按任意空白分割
+                parts = line.split(sep) if sep else line.split()
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) == 2:
+                    break
+            else:
+                raise ValueError(
+                    f"映射文件第 {line_no} 行格式错误，应为 'old<TAB|,|space>new': {raw!r}"
+                )
+
+            old, new = parts
+            if old in mapping:
+                raise ValueError(f"映射文件第 {line_no} 行：旧名 '{old}' 重复")
+            if new in new_names_seen:
+                raise ValueError(
+                    f"映射文件第 {line_no} 行：新名 '{new}' 与第 "
+                    f"'{new_names_seen[new]}' 行的映射冲突"
+                )
+            mapping[old] = new
+            new_names_seen[new] = old
+
+    return mapping
+
+
+def find_related_files(folder: str, basename: str, whitelist: set) -> List[str]:
+    """
+    在 folder 中查找 basename 对应的所有 sidecar 文件（按白名单过滤）。
+    返回完整路径列表。
+    """
+    related: List[str] = []
+    for filename in os.listdir(folder):
+        full_path = os.path.join(folder, filename)
+        if not os.path.isfile(full_path):
+            continue
+        file_base, file_ext = _split_double_ext(filename)
+        if file_base == basename and file_ext in whitelist:
+            related.append(full_path)
+    return related
+
+def _rename_two_stage(folder: str, mapping: Dict[str, str], whitelist: set,
+                      kind_label: str, dry_run: bool = False) -> Tuple[int, int]:
+    """
+    两阶段重命名：先全部 old -> __tmp_<uuid>__，再 tmp -> new。
+    避免 "a -> b、b -> c" 这类链式覆盖造成数据丢失。
+
+    :return: (success_count, fail_count)
+    """
+    # 1. 检查每个 old 是否能在目录下找到至少一个对应文件
+    plans: List[Tuple[str, str, List[str]]] = []  # (old, new, [files])
+    for old, new in mapping.items():
+        files = find_related_files(folder, old, whitelist)
+        if files:
+            plans.append((old, new, files))
+
+    if not plans:
+        print(f"[{kind_label}] 未在目录中找到映射表里的任何文件，跳过。")
+        return 0, 0
+
+    # 2. 冲突检测：目标文件已存在且不在重命名计划中（即不会被腾出来）
+    old_basenames = {old for old, _, _ in plans}
+    for old, new, files in plans:
+        for f in files:
+            _, ext = _split_double_ext(os.path.basename(f))
+            target = os.path.join(folder, new + ext)
+            if os.path.exists(target) and new != old:
+                # 如果目标基础名也在被重命名（即将被腾出），允许
+                if new not in old_basenames:
+                    print(f"[{kind_label}] [冲突] 目标文件已存在: {target}（来自 {old}{ext}）")
+                    return 0, len(plans)
+
+    print(f"[{kind_label}] 共 {len(plans)} 组待重命名，"
+          f"涉及 {sum(len(f) for _, _, f in plans)} 个文件。"
+          f"{' (DRY-RUN)' if dry_run else ''}")
+
+    if dry_run:
+        for old, new, files in plans:
+            for f in files:
+                _, ext = _split_double_ext(os.path.basename(f))
+                print(f"  [dry-run] {os.path.basename(f)} -> {new}{ext}")
+        return len(plans), 0
+
+    # 3. 第一阶段：old -> tmp
+    tmp_token = uuid.uuid4().hex[:8]
+    stage1: List[Tuple[str, str, str]] = []  # (tmp_path, new_basename, ext)
+    success = 0
+    try:
+        for old, new, files in plans:
+            for src in files:
+                _, ext = _split_double_ext(os.path.basename(src))
+                tmp_name = f"__rn_{tmp_token}__{old}{ext}"
+                tmp_path = os.path.join(folder, tmp_name)
+                os.rename(src, tmp_path)
+                stage1.append((tmp_path, new, ext))
+    except OSError as e:
+        print(f"[{kind_label}] [严重] 第一阶段失败，正在回滚: {e}")
+        # 回滚已经改名的文件
+        for tmp_path, _, ext in stage1:
+            base = os.path.basename(tmp_path)
+            # 解析出原始 old: __rn_<token>__<old><ext>
+            prefix = f"__rn_{tmp_token}__"
+            if base.startswith(prefix):
+                old_name = base[len(prefix):]
                 try:
-                    os.rename(old_file_path, new_file_path)
-                    print(f"Renamed: {os.path.basename(old_file_path)} -> {new_file_name}")
-                except OSError as e:
-                    print(f"Error renaming {os.path.basename(old_file_path)}: {e}")
+                    os.rename(tmp_path, os.path.join(folder, old_name))
+                except OSError:
+                    pass
+        return 0, len(plans)
+
+    # 4. 第二阶段：tmp -> new
+    fail = 0
+    for tmp_path, new, ext in stage1:
+        target = os.path.join(folder, new + ext)
+        try:
+            os.rename(tmp_path, target)
+            print(f"[{kind_label}] {os.path.basename(tmp_path)} -> {new}{ext}")
+            success += 1
+        except OSError as e:
+            print(f"[{kind_label}] [失败] {tmp_path} -> {target}: {e}")
+            fail += 1
+
+    return success, fail
+
+
+def batch_rename_gis_files(mapping_path: str, target_folder: str,
+                           kinds: Tuple[str, ...] = ('tif', 'shp'),
+                           dry_run: bool = False) -> None:
+    """
+    根据双列映射文件批量重命名 GIS 文件（含 sidecar）。
+
+    :param mapping_path: 映射文件路径，每行 'old_basename<TAB|,|space>new_basename'
+    :param target_folder: 目标文件夹
+    :param kinds: 要处理的文件类型，'tif' 和/或 'shp'
+    :param dry_run: 仅打印计划，不实际重命名
+    """
+    if not os.path.exists(target_folder):
+        print(f"错误: 目标文件夹不存在: {target_folder}")
+        return
+
+    try:
+        mapping = parse_mapping_file(mapping_path)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"错误: {e}")
+        return
+
+    print(f"加载映射 {len(mapping)} 条；模式: {'DRY-RUN' if dry_run else 'REAL'}")
+
+    if 'tif' in kinds:
+        print("\n--- 处理 TIF 及其 sidecar ---")
+        _rename_two_stage(target_folder, mapping, TIF_SIDECAR_EXTS, 'TIF', dry_run)
+
+    if 'shp' in kinds:
+        print("\n--- 处理 SHP 及其 sidecar ---")
+        _rename_two_stage(target_folder, mapping, SHP_SIDECAR_EXTS, 'SHP', dry_run)
+
 
 if __name__ == '__main__':
-    batch_rename_gis_files()
+    # --- 配置区域 ---
+    # 映射文件格式（每行）：old_basename<TAB|,|space>new_basename
+    # 例如：
+    #   tile_001    chengdu_water_001
+    #   tile_002    chengdu_water_002
+    MAPPING_FILE = r'E:\Samples-水体\chengdu-1024\rename_mapping.txt'
+    TARGET_FOLDER = r'E:\Samples-水体\chengdu-1024\label-shp'
+    KINDS = ('tif', 'shp')   # 要处理的文件类型
+    DRY_RUN = True           # 强烈建议先以 True 预演一次确认计划
+
+    batch_rename_gis_files(
+        mapping_path=MAPPING_FILE,
+        target_folder=TARGET_FOLDER,
+        kinds=KINDS,
+        dry_run=DRY_RUN,
+    )

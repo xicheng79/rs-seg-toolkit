@@ -74,7 +74,16 @@ def write_geotiff(save_path, img_data, transform, projection):
     del dataset
     print(f"保存成功: {save_path}")
 
-def process_georeference(ref_tif_path, mask_png_path, output_tif_path):
+def process_georeference(ref_tif_path, mask_png_path, output_tif_path, force=False):
+    """
+    将 PNG 结果挂上参考影像的地理坐标，输出为 GeoTIFF。
+
+    :param ref_tif_path: 参考影像路径（提供 GeoTransform 和 Projection）
+    :param mask_png_path: 待处理 PNG 路径
+    :param output_tif_path: 输出 GeoTIFF 路径
+    :param force: 当 PNG 与参考影像尺寸不一致时，True 仍强制写入（坐标会偏移），
+                  False（默认）拒绝写入并返回。
+    """
     # 1. 读取参考影像信息
     ds_ref = gdal.Open(ref_tif_path)
     if ds_ref is None:
@@ -85,9 +94,9 @@ def process_georeference(ref_tif_path, mask_png_path, output_tif_path):
     projection = ds_ref.GetProjection()
     ref_w = ds_ref.RasterXSize
     ref_h = ds_ref.RasterYSize
-    
+
     # 释放参考影像
-    del ds_ref
+    ds_ref = None
 
     print(f"参考影像信息:\nGeoTransform: {geo_transform}\nProjection: Found")
 
@@ -95,20 +104,26 @@ def process_georeference(ref_tif_path, mask_png_path, output_tif_path):
     # 注意：这里根据需求选择读取模式。Mask 通常是灰度图 (GRAYSCALE)
     # 如果是彩色预测结果，请改用 IMREAD_COLOR
     mask_data = cv2_imread_safe(mask_png_path, cv2.IMREAD_GRAYSCALE)
-    
+
     if mask_data is None:
         return
 
     # 3. 尺寸一致性检查 (重要!)
     # OpenCV shape 是 (H, W)
     h, w = mask_data.shape[:2]
-    
+
     if h != ref_h or w != ref_w:
-        print(f"\n[严重警告] 尺寸不匹配!")
-        print(f"参考影像: {ref_w} x {ref_h}")
-        print(f"PNG影像: {w} x {h}")
-        print("直接赋予坐标会导致地理位置偏移。程序将继续，但结果可能错误。")
-        # 如果你希望在这种情况下自动终止，可以 return
+        msg = (f"尺寸不匹配!\n"
+               f"  参考影像: {ref_w} x {ref_h}\n"
+               f"  PNG影像 : {w} x {h}")
+        if not force:
+            print(f"\n[错误] {msg}")
+            print("       直接赋予坐标会导致地理位置偏移。已拒绝写入。")
+            print("       如确认要强制继续，请传入 force=True。")
+            return
+        else:
+            print(f"\n[警告] {msg}")
+            print("       force=True 已启用，将继续写入，但坐标可能偏移。")
 
     # 4. 写入
     write_geotiff(output_tif_path, mask_data, geo_transform, projection)
@@ -124,4 +139,7 @@ if __name__ == "__main__":
     # 输出 TIF 路径
     SAVE_FILE = r"D:/WorkSpace/mmsegmentation/data/VacantLand-Chengdu-1024/Result/segformer/H48F019017-vtland-0505.tif"
 
-    process_georeference(REF_IMAGE, MASK_FILE, SAVE_FILE)
+    # 当 PNG 与参考影像尺寸不一致时是否强制继续（默认 False，会拒绝并退出）
+    FORCE = False
+
+    process_georeference(REF_IMAGE, MASK_FILE, SAVE_FILE, force=FORCE)
