@@ -148,30 +148,36 @@ class TrainingLogVisualizer:
         print(f"图表已生成: {save_path}")
 
 if __name__ == '__main__':
-    # --- 配置区域 ---
-    # 权重文件所在文件夹
-    LOG_DIR = r'D:\Projects\python\water\logs\BiSeNetv2_water'
-    
-    # 你想从文件名中提取的指标 (必须包含 'Epoch')
-    # 文件名示例: Epoch100-Train_Loss0.45-Val_f_score0.88.pth
-    TARGET_METRICS = [
-        'Epoch', 
-        'Train_Loss', 'Val_Loss', 
-        'Train_f_score', 'Val_f_score', 
-        'Train_pre_loss', 'Val_pre_loss'
-    ]
-    
-    FILE_EXT = '.pth'
+    import argparse
+    from utils import hint_if_no_args
 
-    # --- 执行逻辑 ---
-    viewer = TrainingLogVisualizer(LOG_DIR, FILE_EXT)
-    
-    # 1. 解析
-    epochs, metrics = viewer.parse_metrics(TARGET_METRICS)
-    
-    # 2. 绘图
+    hint_if_no_args(os.path.basename(__file__))
+
+    DEFAULT_METRICS = [
+        'Epoch',
+        'Train_Loss', 'Val_Loss',
+        'Train_f_score', 'Val_f_score',
+        'Train_pre_loss', 'Val_pre_loss',
+    ]
+
+    parser = argparse.ArgumentParser(
+        description=("根据权重文件名解析训练指标并绘图。"
+                     "文件名示例：Epoch100-Train_Loss0.45-Val_f_score0.88.pth")
+    )
+    parser.add_argument('--log-dir', default=r'D:\Projects\python\water\logs\BiSeNetv2_water',
+                        help='权重文件所在目录（DEMO 默认）')
+    parser.add_argument('--file-ext', default='.pth',
+                        help='权重文件后缀（默认 .pth）')
+    parser.add_argument('--metrics', nargs='+', default=DEFAULT_METRICS,
+                        help="要提取的指标名（须包含 'Epoch'）")
+    parser.add_argument('--title', default='BiSeNetv2 Training Logs',
+                        help='图表标题')
+    args = parser.parse_args()
+
+    viewer = TrainingLogVisualizer(args.log_dir, args.file_ext)
+    epochs, metrics = viewer.parse_metrics(args.metrics)
     viewer.render_chart(
-        epoch_list=epochs, 
-        data_dict=metrics, 
-        title="BiSeNetv2 Training Logs"
+        epoch_list=epochs,
+        data_dict=metrics,
+        title=args.title,
     )

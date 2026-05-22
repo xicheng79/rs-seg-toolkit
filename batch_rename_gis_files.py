@@ -206,19 +206,30 @@ def batch_rename_gis_files(mapping_path: str, target_folder: str,
 
 
 if __name__ == '__main__':
-    # --- 配置区域 ---
-    # 映射文件格式（每行）：old_basename<TAB|,|space>new_basename
-    # 例如：
-    #   tile_001    chengdu_water_001
-    #   tile_002    chengdu_water_002
-    MAPPING_FILE = r'E:\Samples-水体\chengdu-1024\rename_mapping.txt'
-    TARGET_FOLDER = r'E:\Samples-水体\chengdu-1024\label-shp'
-    KINDS = ('tif', 'shp')   # 要处理的文件类型
-    DRY_RUN = True           # 强烈建议先以 True 预演一次确认计划
+    import argparse
+    from utils import hint_if_no_args
+
+    hint_if_no_args(os.path.basename(__file__))
+
+    parser = argparse.ArgumentParser(
+        description=("批量重命名 GIS 文件（含 sidecar）。"
+                     "映射文件每行格式：old_basename<TAB|,|space>new_basename。"
+                     "默认 dry-run，安全预演确认后再加 --apply 真实执行。")
+    )
+    parser.add_argument('--mapping', default=r'E:\Samples-水体\chengdu-1024\rename_mapping.txt',
+                        help='双列映射文件路径')
+    parser.add_argument('--target', default=r'E:\Samples-水体\chengdu-1024\label-shp',
+                        help='待重命名文件所在目录')
+    parser.add_argument('--kinds', nargs='+', default=['tif', 'shp'],
+                        choices=['tif', 'shp'],
+                        help="要处理的类型，可多选（默认 tif shp）")
+    parser.add_argument('--apply', action='store_true',
+                        help='真实执行重命名；不传则 dry-run 仅预演')
+    args = parser.parse_args()
 
     batch_rename_gis_files(
-        mapping_path=MAPPING_FILE,
-        target_folder=TARGET_FOLDER,
-        kinds=KINDS,
-        dry_run=DRY_RUN,
+        mapping_path=args.mapping,
+        target_folder=args.target,
+        kinds=tuple(args.kinds),
+        dry_run=not args.apply,
     )

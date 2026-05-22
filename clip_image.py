@@ -4,14 +4,9 @@ import cv2
 from osgeo import gdal
 from tqdm import tqdm
 
-# --- 辅助函数：解决中文路径问题的 OpenCV 读写 ---
-def cv2_imwrite_safe(save_path, img):
-    try:
-        # 获取文件扩展名
-        ext = os.path.splitext(save_path)[1]
-        cv2.imencode(ext, img)[1].tofile(save_path)
-    except Exception as e:
-        print(f"写入失败: {save_path} - {e}")
+# 公共安全 IO（中文路径、GDAL None 检查）由 utils 统一提供
+from utils import imwrite_safe as cv2_imwrite_safe
+from utils import gdal_open
 
 # --- 核心转换函数 ---
 def gdal_to_opencv(gdal_data, bgr_swap=False):
@@ -44,9 +39,8 @@ def clip_image_gdal(src_path, dst_dir, crop_size=1024, overlap_ratio=0.1,
     :param bgr_swap: 见 gdal_to_opencv 的说明；默认 False
     """
     # 1. 打开图像
-    dataset = gdal.Open(src_path)
-    if not dataset:
-        print(f"无法打开文件: {src_path}")
+    dataset = gdal_open(src_path)
+    if dataset is None:
         return
 
     width = dataset.RasterXSize
@@ -126,13 +120,21 @@ def process_folder(src_dir, crop_size=1024, bgr_swap=False):
         clip_image_gdal(src_path, dst_dir, crop_size=crop_size, bgr_swap=bgr_swap)
 
 if __name__ == "__main__":
-    # 配置区域
-    INPUT_DIR = r"E:\Samples-Water\chengdu\image"  # 你的输入路径
-    CROP_SIZE = 1024
-    # 是否做 RGB<->BGR 翻转。
-    # 仅当输入恰为 3 波段、波段顺序确为 RGB、且后续工具按 BGR 解读时才设为 True。
-    # 遥感多波段 / 单波段 / 非 RGB 波段顺序的场景请保持 False。
-    BGR_SWAP = False
+    import argparse
+    from utils import hint_if_no_args
 
-    process_folder(INPUT_DIR, CROP_SIZE, bgr_swap=BGR_SWAP)
+    hint_if_no_args(os.path.basename(__file__))
+
+    parser = argparse.ArgumentParser(
+        description="对目录下所有遥感影像进行滑窗裁剪，保留 GDAL 原波段语义。"
+    )
+    parser.add_argument('--src', default=r"E:\Samples-Water\chengdu\image",
+                        help='输入影像目录（DEMO 默认）')
+    parser.add_argument('--crop-size', type=int, default=1024, help='裁剪尺寸（默认 1024）')
+    parser.add_argument('--bgr-swap', action='store_true',
+                        help=('仅当输入恰为 3 波段且确为 RGB 顺序、'
+                              '后续工具按 BGR 解读时才启用。默认不翻转。'))
+    args = parser.parse_args()
+
+    process_folder(args.src, args.crop_size, bgr_swap=args.bgr_swap)
     print("所有处理完成。")

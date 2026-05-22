@@ -15,34 +15,13 @@ import numpy as np
 from tqdm import tqdm
 from typing import Dict, Optional
 
+# 公共安全 IO（中文路径、IMREAD_UNCHANGED）由 utils 统一提供
+from utils import imread_unchanged as cv2_imread_unchanged
+from utils import imwrite_safe as cv2_imwrite_safe
+
 
 # OpenCV imencode 支持的常见标签后缀
 _SUPPORTED_EXTS = {'.png', '.tif', '.tiff', '.bmp'}
-
-
-def cv2_imread_unchanged(file_path: str):
-    """支持中文路径的 OpenCV 读取，IMREAD_UNCHANGED 保留原 dtype。"""
-    try:
-        return cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
-                            cv2.IMREAD_UNCHANGED)
-    except Exception as e:
-        print(f"读取错误: {file_path} - {e}")
-        return None
-
-
-def cv2_imwrite_safe(save_path: str, img: np.ndarray) -> bool:
-    """支持中文路径的 OpenCV 写入。返回是否成功。"""
-    try:
-        ext = os.path.splitext(save_path)[1]
-        ok, buf = cv2.imencode(ext, img)
-        if not ok:
-            print(f"写入失败（imencode 返回 False）: {save_path}")
-            return False
-        buf.tofile(save_path)
-        return True
-    except Exception as e:
-        print(f"写入错误: {save_path} - {e}")
-        return False
 
 
 def _build_lut(mapping: Dict[int, int], dtype: np.dtype,
@@ -159,21 +138,51 @@ def process_labels(src_dir: str, dst_dir: str,
 
 
 if __name__ == '__main__':
-    # ====== 配置区 ======
-    SRC_DIR = r"E:\Samples-Water\chengdu\label-png"
-    DST_DIR = r"E:\Samples-Water\chengdu\label-png-new"
+    import argparse
+    from utils import hint_if_no_args
 
-    # 映射字典：{旧像素值: 新像素值}
-    # 示例 1：旧版兼容（前景 30 -> 1）
-    MAPPING = {30: 1}
-    # 示例 2：多类重排（注释掉示例 1 启用）
-    # MAPPING = {0: 0, 50: 1, 100: 2, 150: 3, 200: 4}
-    # 示例 3：二值化（255 -> 1，其他 -> 0）
-    # MAPPING = {255: 1}; UNMAPPED = 'set'; UNMAPPED_VALUE = 0
+    hint_if_no_args(os.path.basename(__file__))
 
-    EXT = '.png'
-    UNMAPPED = 'keep'    # 'keep' 保留未映射值；'set' 将其改为 UNMAPPED_VALUE
-    UNMAPPED_VALUE = 0
+    def _parse_mapping(s: str):
+        """将 '30:1,50:2' 解析为 {30:1, 50:2}。"""
+        result = {}
+        for pair in s.split(','):
+            pair = pair.strip()
+            if not pair:
+                continue
+            if ':' not in pair:
+                raise argparse.ArgumentTypeError(
+                    f"映射项必须形如 'old:new'，得到: {pair!r}"
+                )
+            old, new = pair.split(':', 1)
+            try:
+                result[int(old.strip())] = int(new.strip())
+            except ValueError as e:
+                raise argparse.ArgumentTypeError(
+                    f"映射项 {pair!r} 的键值必须是整数: {e}"
+                ) from e
+        if not result:
+            raise argparse.ArgumentTypeError("映射不能为空")
+        return result
 
-    process_labels(SRC_DIR, DST_DIR, MAPPING,
-                   ext=EXT, unmapped=UNMAPPED, unmapped_value=UNMAPPED_VALUE)
+    parser = argparse.ArgumentParser(
+        description=("按 {old:new} 映射对标签图做像素值重映射，"
+                     "支持 8/16 位、LUT 加速、unmapped 策略。")
+    )
+    parser.add_argument('--src', default=r"E:\Samples-Water\chengdu\label-png",
+                        help='源标签目录（DEMO 默认）')
+    parser.add_argument('--dst', default=r"E:\Samples-Water\chengdu\label-png-new",
+                        help='输出目录（DEMO 默认）')
+    parser.add_argument('--mapping', type=_parse_mapping, default={30: 1},
+                        help=("映射字典字符串，形如 '30:1,50:2,100:3'；"
+                              "默认 '30:1'（旧版兼容：前景 30 -> 1）"))
+    parser.add_argument('--ext', default='.png', help='标签后缀（默认 .png）')
+    parser.add_argument('--unmapped', choices=['keep', 'set'], default='keep',
+                        help="未映射值策略：keep 保留原值；set 改为 --unmapped-value")
+    parser.add_argument('--unmapped-value', type=int, default=0,
+                        help='当 --unmapped=set 时使用的填充值（默认 0）')
+    args = parser.parse_args()
+
+    process_labels(args.src, args.dst, args.mapping,
+                   ext=args.ext, unmapped=args.unmapped,
+                   unmapped_value=args.unmapped_value)

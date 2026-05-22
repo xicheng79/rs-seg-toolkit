@@ -14,6 +14,9 @@ import numpy as np
 from tqdm import tqdm
 from prettytable import PrettyTable
 
+# 公共安全 IO（中文路径、GDAL None 检查）由 utils 统一提供
+from utils import imread_unchanged, gdal_open
+
 try:
     from osgeo import gdal
     HAS_GDAL = True
@@ -42,7 +45,7 @@ class LabelAnalyzer:
         """读取标签图像，返回 (H,W) ndarray 或 None。"""
         if self.use_gdal:
             try:
-                ds = gdal.Open(file_path)
+                ds = gdal_open(file_path)
                 if ds is None:
                     return None
                 arr = ds.GetRasterBand(1).ReadAsArray()
@@ -51,17 +54,12 @@ class LabelAnalyzer:
             except Exception as e:
                 print(f"GDAL 读取错误: {file_path} - {e}")
                 return None
-        try:
-            img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
-                               cv2.IMREAD_UNCHANGED)
-            if img is None:
-                return None
-            if img.ndim == 3:
-                img = img[..., 0]  # 多通道标签取第 0 通道
-            return img
-        except Exception as e:
-            print(f"读取错误: {file_path} - {e}")
+        img = imread_unchanged(file_path)
+        if img is None:
             return None
+        if img.ndim == 3:
+            img = img[..., 0]  # 多通道标签取第 0 通道
+        return img
 
 
     def run(self):
@@ -191,17 +189,44 @@ class LabelAnalyzer:
 
 
 if __name__ == "__main__":
-    # ====== 配置示例 ======
-    # 1) 自动检测所有类别（推荐起步）：       class_values=None
-    # 2) 二分类（兼容旧版 0/255）：           class_values=[0, 255]
-    # 3) 多类 + 忽略未标注像素（255）：       class_values=[0,1,2,3], ignore_value=255
-    PATH = r'E:\nets-dataset\water\train_samples\label'
+    import argparse
+    from utils import hint_if_no_args
+
+    hint_if_no_args(os.path.basename(__file__))
+
+    def _parse_int_list(s: str):
+        """将 '0,1,2,3' 解析为 [0,1,2,3]；'auto' 或空 -> None。"""
+        s = s.strip()
+        if not s or s.lower() == 'auto':
+            return None
+        try:
+            return [int(x.strip()) for x in s.split(',') if x.strip()]
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(
+                f"--classes 必须是逗号分隔整数列表或 'auto'，得到: {s!r} ({e})"
+            ) from e
+
+    parser = argparse.ArgumentParser(
+        description=("分析语义分割标签的类别分布；支持自动检测、多类、"
+                     "ignore_value、inverse-frequency 权重。")
+    )
+    parser.add_argument('--path', default=r'E:\nets-dataset\water\train_samples\label',
+                        help='标签目录（DEMO 默认）')
+    parser.add_argument('--ext', default='.png', help='标签后缀（默认 .png）')
+    parser.add_argument('--classes', type=_parse_int_list, default=None,
+                        help=("期望统计的类别 ID，逗号分隔（如 '0,1,2,3'）；"
+                              "默认 'auto' 自动检测所有类别"))
+    parser.add_argument('--ignore-value', type=int, default=None,
+                        help='忽略值（例如 255 表示未标注），不计入任何类别')
+    parser.add_argument('--use-gdal', action='store_true',
+                        help='用 GDAL 读取（推荐 16 位标签）')
+    args = parser.parse_args()
 
     analyzer = LabelAnalyzer(
-        folder_path=PATH,
-        ext='.png',
-        class_values=None,    # None=自动；或传 [0, 255]、[0,1,2,3] 等
-        ignore_value=None,    # 例如 255 表示未标注/忽略
-        use_gdal=False,       # 16 位标签建议 True
+        folder_path=args.path,
+        ext=args.ext,
+        class_values=args.classes,
+        ignore_value=args.ignore_value,
+        use_gdal=args.use_gdal,
     )
     analyzer.run()

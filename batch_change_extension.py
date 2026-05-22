@@ -73,16 +73,25 @@ def batch_change_extension(src_dir, old_ext='.png', new_ext='.tif', dst_dir=None
         print("       如果后续软件无法打开，请使用 convert_png_to_geotiff.py 进行真正的格式转换。")
 
 if __name__ == '__main__':
-    # --- 配置区域 ---
-    SRC_PATH = r'C:\Users\xi\Desktop\test\04\1024'
-    DST_PATH = r'C:\Users\xi\Desktop\test\04\1024tif' # 如果为 None，则在源目录直接改
-    
-    OLD_EXT = '.png'
-    NEW_EXT = '.tif'
-    
+    import argparse
+    from utils import hint_if_no_args
+
+    hint_if_no_args(os.path.basename(__file__))
+
+    parser = argparse.ArgumentParser(
+        description="批量修改文件后缀名（仅重命名，不做格式转换）。无参时使用内置 DEMO 默认值。"
+    )
+    parser.add_argument('--src', default=r'C:\Users\xi\Desktop\test\04\1024',
+                        help='源文件夹路径（DEMO 默认）')
+    parser.add_argument('--dst', default=r'C:\Users\xi\Desktop\test\04\1024tif',
+                        help='目标文件夹路径；省略或传空字符串则在源目录原地改名')
+    parser.add_argument('--old-ext', default='.png', help='旧后缀（默认 .png）')
+    parser.add_argument('--new-ext', default='.tif', help='新后缀（默认 .tif）')
+    args = parser.parse_args()
+
     batch_change_extension(
-        src_dir=SRC_PATH, 
-        old_ext=OLD_EXT, 
-        new_ext=NEW_EXT, 
-        dst_dir=DST_PATH
+        src_dir=args.src,
+        old_ext=args.old_ext,
+        new_ext=args.new_ext,
+        dst_dir=args.dst if args.dst else None,
     )

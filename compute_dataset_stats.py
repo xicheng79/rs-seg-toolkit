@@ -12,6 +12,9 @@ import numpy as np
 from tqdm import tqdm
 from prettytable import PrettyTable
 
+# 公共安全 IO（中文路径、GDAL None 检查）由 utils 统一提供
+from utils import imread_unchanged, gdal_open
+
 try:
     from osgeo import gdal
     HAS_GDAL = True
@@ -55,28 +58,23 @@ class DatasetStats:
 
     def cv2_imread_safe(self, file_path):
         """OpenCV 读取，IMREAD_UNCHANGED 保留原 dtype/通道数。返回 (HWC array, None)。"""
-        try:
-            img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
-                               cv2.IMREAD_UNCHANGED)
-            if img is None:
-                return None, None
-            if img.ndim == 2:
-                img = img[:, :, np.newaxis]
-            else:
-                # OpenCV 默认 BGR/BGRA，转为 RGB/RGBA 与 GDAL 行为一致
-                if img.shape[2] == 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                elif img.shape[2] == 4:
-                    img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
-            return img, None
-        except Exception as e:
-            print(f"OpenCV 读取错误: {file_path} - {e}")
+        img = imread_unchanged(file_path)
+        if img is None:
             return None, None
+        if img.ndim == 2:
+            img = img[:, :, np.newaxis]
+        else:
+            # OpenCV 默认 BGR/BGRA，转为 RGB/RGBA 与 GDAL 行为一致
+            if img.shape[2] == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            elif img.shape[2] == 4:
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+        return img, None
 
     def gdal_imread(self, file_path):
         """GDAL 读取，返回 (HWC array, nodata_value)。"""
         try:
-            ds = gdal.Open(file_path)
+            ds = gdal_open(file_path)
             if ds is None:
                 return None, None
             arr = ds.ReadAsArray()  # (C,H,W) 或 (H,W)
@@ -205,18 +203,33 @@ class DatasetStats:
 
 
 if __name__ == '__main__':
-    # 配置区
-    DATA_PATH = r'E:\Samples-Water\chengdu\image'
-    FILE_EXT = '.tif'
-    NORMALIZE = True
-    NODATA = None       # 例如设为 0 可排除全黑填充区域
-    USE_GDAL = True     # 推荐 True，遥感 .tif 必须 True 才能正确读取多波段/16位
+    import argparse
+    from utils import hint_if_no_args
+
+    hint_if_no_args(os.path.basename(__file__))
+
+    parser = argparse.ArgumentParser(
+        description=("计算数据集每个波段的均值与标准差（深度学习输入归一化）。"
+                     "支持任意波段数、dtype、NoData。")
+    )
+    parser.add_argument('--path', default=r'E:\Samples-Water\chengdu\image',
+                        help='图像目录（DEMO 默认）')
+    parser.add_argument('--ext', default='.tif', help='图像后缀（默认 .tif）')
+    parser.add_argument('--no-normalize', dest='normalize', action='store_false',
+                        help='输出原始像素值统计（不按 dtype 最大值归一化）')
+    parser.set_defaults(normalize=True)
+    parser.add_argument('--nodata', type=float, default=None,
+                        help='显式 NoData 值（例如 0 排除全黑填充区）；不传则尝试 GDAL 元数据')
+    parser.add_argument('--no-gdal', dest='use_gdal', action='store_false',
+                        help='改用 OpenCV 读取（仅适合 8 位 1/3 通道；遥感 .tif 必须用 GDAL）')
+    parser.set_defaults(use_gdal=True)
+    args = parser.parse_args()
 
     stats_tool = DatasetStats(
-        path=DATA_PATH,
-        img_ext=FILE_EXT,
-        is_norm=NORMALIZE,
-        nodata=NODATA,
-        use_gdal=USE_GDAL,
+        path=args.path,
+        img_ext=args.ext,
+        is_norm=args.normalize,
+        nodata=args.nodata,
+        use_gdal=args.use_gdal,
     )
     stats_tool.calculate()

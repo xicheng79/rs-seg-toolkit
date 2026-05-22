@@ -3,16 +3,12 @@ import cv2
 import numpy as np
 from osgeo import gdal
 
+# 公共安全 IO（中文路径、GDAL None 检查）由 utils 统一提供
+from utils import imread_with_flag as cv2_imread_safe
+from utils import gdal_open
+
 # 防止超大图导致 OpenCV 报错（解压炸弹保护）
 os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2, 40))
-
-def cv2_imread_safe(file_path, flags=cv2.IMREAD_UNCHANGED):
-    """安全读取图像，支持中文路径"""
-    try:
-        return cv2.imdecode(np.fromfile(file_path, dtype=np.uint8), flags)
-    except Exception as e:
-        print(f"读取失败: {file_path} - {e}")
-        return None
 
 def write_geotiff(save_path, img_data, transform, projection):
     """
@@ -85,9 +81,8 @@ def process_georeference(ref_tif_path, mask_png_path, output_tif_path, force=Fal
                   False（默认）拒绝写入并返回。
     """
     # 1. 读取参考影像信息
-    ds_ref = gdal.Open(ref_tif_path)
+    ds_ref = gdal_open(ref_tif_path)
     if ds_ref is None:
-        print(f"无法打开参考影像: {ref_tif_path}")
         return
 
     geo_transform = ds_ref.GetGeoTransform()
@@ -129,17 +124,22 @@ def process_georeference(ref_tif_path, mask_png_path, output_tif_path, force=Fal
     write_geotiff(output_tif_path, mask_data, geo_transform, projection)
 
 if __name__ == "__main__":
-    # 配置路径
-    # 参考影像 (提供坐标)
-    REF_IMAGE = r"E:/chengdu/google_earth_maps/Level20/H48F019017.tif"
-    
-    # 原始 PNG 结果 (无坐标)
-    MASK_FILE = r"D:/WorkSpace/mmsegmentation/data/VacantLand-Chengdu-1024/Result/segformer/H48F019017-vtland-0505.png"
-    
-    # 输出 TIF 路径
-    SAVE_FILE = r"D:/WorkSpace/mmsegmentation/data/VacantLand-Chengdu-1024/Result/segformer/H48F019017-vtland-0505.tif"
+    import argparse
+    from utils import hint_if_no_args
 
-    # 当 PNG 与参考影像尺寸不一致时是否强制继续（默认 False，会拒绝并退出）
-    FORCE = False
+    hint_if_no_args(os.path.basename(__file__))
 
-    process_georeference(REF_IMAGE, MASK_FILE, SAVE_FILE, force=FORCE)
+    parser = argparse.ArgumentParser(
+        description="将无坐标 PNG 结果挂上参考影像的地理坐标，输出为 GeoTIFF。"
+    )
+    parser.add_argument('--ref', default=r"E:/chengdu/google_earth_maps/Level20/H48F019017.tif",
+                        help='参考影像（提供 GeoTransform/Projection）')
+    parser.add_argument('--mask', default=r"D:/WorkSpace/mmsegmentation/data/VacantLand-Chengdu-1024/Result/segformer/H48F019017-vtland-0505.png",
+                        help='待挂坐标的 PNG')
+    parser.add_argument('--out', default=r"D:/WorkSpace/mmsegmentation/data/VacantLand-Chengdu-1024/Result/segformer/H48F019017-vtland-0505.tif",
+                        help='输出 GeoTIFF 路径')
+    parser.add_argument('--force', action='store_true',
+                        help='PNG 与参考影像尺寸不一致时仍强制写入（默认拒绝）')
+    args = parser.parse_args()
+
+    process_georeference(args.ref, args.mask, args.out, force=args.force)

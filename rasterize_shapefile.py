@@ -3,6 +3,9 @@ import sys
 from osgeo import gdal, ogr
 from tqdm import tqdm
 
+# 公共安全 IO（GDAL None 检查、友好错误提示）由 utils 统一提供
+from utils import gdal_open
+
 def rasterize_layer(shapefile_path, reference_raster_path, save_path, attribute_field="ID", target_value=None):
     """
     将 Shapefile 栅格化为与参考影像一致的图像
@@ -15,9 +18,8 @@ def rasterize_layer(shapefile_path, reference_raster_path, save_path, attribute_
     """
     
     # 1. 打开参考影像获取地理信息
-    ref_ds = gdal.Open(reference_raster_path, gdal.GA_ReadOnly)
+    ref_ds = gdal_open(reference_raster_path, mode='ro')
     if ref_ds is None:
-        print(f"无法打开参考影像: {reference_raster_path}")
         return
     
     x_res = ref_ds.RasterXSize
@@ -82,16 +84,12 @@ def rasterize_layer(shapefile_path, reference_raster_path, save_path, attribute_
     ref_ds = None
     shp_ds = None
 
-def main():
+def main(shp_dir, ref_img_dir, save_dir,
+         attribute_field="ID", target_value=None):
     # 配置 GDAL 中文支持 (现代环境通常不需要设为 NO，如有乱码可尝试置空或 YES)
     gdal.SetConfigOption("GDAL_FILENAME_IS_UTF8", "YES")
     gdal.SetConfigOption("SHAPE_ENCODING", "UTF-8") # 或 'CP936' 取决于你的shp编码
     ogr.RegisterAll()
-
-    # --- 配置路径 ---
-    shp_dir = r'E:\Samples-Water\chengdu-1024\label-shp'
-    ref_img_dir = r'E:\Samples-Water\chengdu-1024\img-tif'
-    save_dir = r'E:\Samples-Water\chengdu-1024\label-png'
 
     # 自动创建输出目录
     os.makedirs(save_dir, exist_ok=True)
@@ -116,17 +114,43 @@ def main():
             continue
 
         # 执行转换
-        # 如果你的 Shapefile ID=30，但你想在 png 里表现为 255 (白色)，
-        # 可以设置 target_value=255。如果想保留 ID 原值，删掉 target_value 参数。
+        # 如果你的 Shapefile ID=30，但想在 png 里表现为 255（白色），传 --target-value 255。
+        # 不传则保留原属性值。
         rasterize_layer(
             shapefile_path=shp_path,
             reference_raster_path=ref_path,
             save_path=save_path,
-            attribute_field="ID",
-            # target_value=255 # <--- 如果需要强制转换颜色，请取消注释这行
+            attribute_field=attribute_field,
+            target_value=target_value,
         )
 
     print("转换完成。")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    from utils import hint_if_no_args
+
+    hint_if_no_args(os.path.basename(__file__))
+
+    parser = argparse.ArgumentParser(
+        description="批量将 Shapefile 栅格化为与同名参考影像尺寸一致的 PNG。"
+    )
+    parser.add_argument('--shp-dir', default=r'E:\Samples-Water\chengdu-1024\label-shp',
+                        help='Shapefile 所在目录（DEMO 默认）')
+    parser.add_argument('--ref-img-dir', default=r'E:\Samples-Water\chengdu-1024\img-tif',
+                        help='参考影像所在目录（DEMO 默认）')
+    parser.add_argument('--save-dir', default=r'E:\Samples-Water\chengdu-1024\label-png',
+                        help='输出 PNG 目录（DEMO 默认）')
+    parser.add_argument('--attribute-field', default='ID',
+                        help='用于栅格化的属性字段名（默认 ID）')
+    parser.add_argument('--target-value', type=int, default=None,
+                        help='强制写入的像素值（如 255 表示白色）；不传则保留属性原值')
+    args = parser.parse_args()
+
+    main(
+        shp_dir=args.shp_dir,
+        ref_img_dir=args.ref_img_dir,
+        save_dir=args.save_dir,
+        attribute_field=args.attribute_field,
+        target_value=args.target_value,
+    )

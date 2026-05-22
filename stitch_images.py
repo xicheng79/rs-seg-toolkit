@@ -3,21 +3,9 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-def cv2_imread_safe(file_path):
-    """安全读取图像，支持中文路径"""
-    try:
-        return cv2.imdecode(np.fromfile(file_path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-    except Exception as e:
-        print(f"读取失败: {file_path} - {e}")
-        return None
-
-def cv2_imwrite_safe(save_path, img):
-    """安全写入图像，支持中文路径"""
-    try:
-        ext = os.path.splitext(save_path)[1]
-        cv2.imencode(ext, img)[1].tofile(save_path)
-    except Exception as e:
-        print(f"写入失败: {save_path} - {e}")
+# 公共安全 IO（中文路径、IMREAD_UNCHANGED 等）由 utils 统一提供
+from utils import imread_unchanged as cv2_imread_safe
+from utils import imwrite_safe as cv2_imwrite_safe
 
 def stitch_images(src_dir, grid_w, grid_h, patch_size, overlap=0, img_ext='.png'):
     """
@@ -130,16 +118,25 @@ def stitch_images(src_dir, grid_w, grid_h, patch_size, overlap=0, img_ext='.png'
         cv2_imwrite_safe(save_path, canvas)
 
 if __name__ == "__main__":
-    # 配置参数
-    # 必须与 CutPicture.py 中的切片参数完全一致
-    PARAMS = {
-        'src_dir': r"E:\nets-dataset\water\samples-water(chengdu)\changelabel\split",
-        'grid_w': 2,       # 水平横着切了几刀 (X_NUM)
-        'grid_h': 2,       # 垂直竖着切了几刀 (Y_NUM)
-        'patch_size': 512, # 切片大小
-        'overlap': 0,      # 重叠大小 (Common)
-        'img_ext': '.png'
-    }
+    import argparse
+    from utils import hint_if_no_args
 
-    stitch_images(**PARAMS)
+    hint_if_no_args(os.path.basename(__file__))
+
+    parser = argparse.ArgumentParser(
+        description="将切片小图按网格拼接为整图。参数必须与 clip_image.py 切片时一致。"
+    )
+    parser.add_argument('--src', default=r"E:\nets-dataset\water\samples-water(chengdu)\changelabel\split",
+                        help='切片小图所在目录（DEMO 默认）')
+    parser.add_argument('--grid-w', type=int, default=2, help='水平方向切片数量')
+    parser.add_argument('--grid-h', type=int, default=2, help='垂直方向切片数量')
+    parser.add_argument('--patch-size', type=int, default=512, help='切片尺寸')
+    parser.add_argument('--overlap', type=int, default=0, help='重叠像素数')
+    parser.add_argument('--img-ext', default='.png', help='切片后缀')
+    args = parser.parse_args()
+
+    stitch_images(
+        src_dir=args.src, grid_w=args.grid_w, grid_h=args.grid_h,
+        patch_size=args.patch_size, overlap=args.overlap, img_ext=args.img_ext,
+    )
     print("所有拼接完成。")
